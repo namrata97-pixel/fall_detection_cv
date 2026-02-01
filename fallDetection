@@ -1,0 +1,176 @@
+# ================================================================
+# FINAL GOOGLE COLAB CODE – FALL + DISTRESS DETECTION
+# ================================================================
+
+!pip install mediapipe==0.10.14 --quiet
+
+import cv2, csv, math
+import numpy as np
+import mediapipe as mp
+from google.colab import files
+from IPython.display import Video, FileLink
+
+print("📌 Upload your video file...")
+uploaded = files.upload()
+
+VIDEO_PATH = list(uploaded.keys())[0]
+OUTPUT_VIDEO = "fall_detection_output.mp4"
+LOG_FILE = "fall_events.csv"
+
+# -------------------------------------------------
+# Mediapipe Pose Setup
+# -------------------------------------------------
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(
+    static_image_mode=False,
+    model_complexity=1,
+    smooth_landmarks=True
+)
+
+# -------------------------------------------------
+# Improved Fall Detector Class
+# -------------------------------------------------
+class FallDetector:
+    def __init__(self, H):
+        self.H = H
+        self.prev_center = None
+        self.prev_head_y = None
+
+    def update(self, shoulder, hip, head_y):
+        if shoulder is None or hip is None:
+            return 0.05, 0.0   # fall_prob, distress_prob
+
+        shoulder = np.array(shoulder)
+        hip = np.array(hip)
+        center = (shoulder + hip) / 2
+
+        # ------------------------------
+        # 1. BODY TILT ANGLE
+        # ------------------------------
+        vec = shoulder - hip
+        vec = vec / max(np.linalg.norm(vec), 1)
+        angle = math.degrees(math.acos(np.dot(vec, np.array([0, -1]))))
+
+        # ------------------------------
+        # 2. HIP DROP (height ratio)
+        # ------------------------------
+        hip_drop = hip[1] / self.H
+
+        # ------------------------------
+        # 3. VELOCITY (falling speed)
+        # ------------------------------
+        velocity = 0
+        if self.prev_center is not None:
+            velocity = abs(center[1] - self.prev_center[1])
+        self.prev_center = center
+
+        # ------------------------------
+        # 4. Fall Probability
+        # ------------------------------
+        fall_score = 0
+        if angle > 50: fall_score += 0.4
+        if hip_drop > 0.55: fall_score += 0.4
+        if velocity > 12: fall_score += 0.4
+        fall_prob = min(fall_score, 0.99)
+
+        # ------------------------------
+        # 5. Distress Score (head jerk)
+        # ------------------------------
+        distress_prob = 0
+        if self.prev_head_y is not None:
+            if abs(head_y - self.prev_head_y) > 15:
+                distress_prob = 0.9
+        self.prev_head_y = head_y
+
+        return fall_prob, distress_prob
+
+
+# -------------------------------------------------
+# Video Processing
+# -------------------------------------------------
+cap = cv2.VideoCapture(VIDEO_PATH)
+fps = cap.get(cv2.CAP_PROP_FPS)
+W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+detector = FallDetector(H)
+
+out = cv2.VideoWriter(
+    OUTPUT_VIDEO,
+    cv2.VideoWriter_fourcc(*"mp4v"),
+    fps,
+    (W, H)
+)
+
+csv_file = open(LOG_FILE, "w", newline="")
+writer = csv.writer(csv_file)
+writer.writerow(["frame", "fall_prob", "distress_prob", "label"])
+
+frame_id = 0
+
+# -------------------------------------------------
+# MAIN LOOP
+# -------------------------------------------------
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame_id += 1
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb)
+
+    shoulder = hip = head_y = None
+
+    if results.pose_landmarks:
+        lm = results.pose_landmarks.landmark
+
+        def xy(i):
+            return (int(lm[i].x * W), int(lm[i].y * H))
+
+        # key joints
+        L_SH, R_SH = 11, 12
+        L_HIP, R_HIP = 23, 24
+        NOSE = 0
+
+        shoulder = np.mean([xy(L_SH), xy(R_SH)], axis=0)
+        hip = np.mean([xy(L_HIP), xy(R_HIP)], axis=0)
+        head_y = xy(NOSE)[1]
+
+        # draw skeleton
+        mp.solutions.drawing_utils.draw_landmarks(
+            frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+            mp.solutions.drawing_styles.get_default_pose_landmarks_style()
+        )
+
+    # prediction
+    fall_prob, distress_prob = detector.update(shoulder, hip, head_y)
+
+    # final label
+    if fall_prob > 0.85:
+        label = "FALL DETECTED"
+        color = (0,0,255)
+    else:
+        label = "NORMAL"
+        color = (0,255,0)
+
+    # draw text
+    cv2.putText(frame, f"{label}", (30, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+    cv2.putText(frame, f"Fall: {fall_prob:.2f}", (30, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+    cv2.putText(frame, f"Distress: {distress_prob:.2f}", (30, 160),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+
+    out.write(frame)
+    writer.writerow([frame_id, fall_prob, distress_prob, label])
+
+cap.release()
+out.release()
+csv_file.close()
+
+print("🎉 DONE! Download your files below ↓")
+
+Video(OUTPUT_VIDEO, embed=True)
+FileLink(OUTPUT_VIDEO)
+FileLink(LOG_FILE)
