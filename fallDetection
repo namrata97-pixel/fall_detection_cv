@@ -10,7 +10,7 @@ import mediapipe as mp
 from google.colab import files
 from IPython.display import Video, FileLink
 
-print("📌 Upload your video file...")
+print("Upload your video file...")
 uploaded = files.upload()
 
 VIDEO_PATH = list(uploaded.keys())[0]
@@ -169,7 +169,7 @@ cap.release()
 out.release()
 csv_file.close()
 
-print("🎉 DONE! Download your files below ↓")
+print("DONE! Download your files below")
 
 Video(OUTPUT_VIDEO, embed=True)
 FileLink(OUTPUT_VIDEO)
